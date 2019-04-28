@@ -3,8 +3,8 @@ import numpy as np
 from keras.preprocessing import sequence
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold
-from keras.layers import Input, Flatten, Dense, Activation,Average
-from keras.layers import Concatenate,Dropout,Conv1D,MaxPooling1D,BatchNormalization
+from keras.layers import Input, Flatten, Dense, Activation
+from keras.layers import Concatenate, Dropout, Conv1D, MaxPooling1D, BatchNormalization
 from keras.models import Model
 from keras import backend as K
 from keras.callbacks import ModelCheckpoint
@@ -41,6 +41,7 @@ def load_elmo(path, max_len=200):
 
     return np.array(X), np.array(Y), np.array(ids)
 
+
 def conv1d(max_len, embed_size):
     '''
     CNN without Batch Normalisation.
@@ -51,7 +52,7 @@ def conv1d(max_len, embed_size):
     filter_sizes = [2, 3, 4, 5, 6]
     num_filters = 128
     drop = 0.5
-    inputs = Input(shape=(max_len,embed_size), dtype='float32')
+    inputs = Input(shape=(max_len, embed_size), dtype='float32')
 
     conv_0 = Conv1D(num_filters, kernel_size=(filter_sizes[0]))(inputs)
     act_0 = Activation('relu')(conv_0)
@@ -76,10 +77,11 @@ def conv1d(max_len, embed_size):
     output = Dense(units=1, activation='sigmoid')(dropout)
 
     model = Model(inputs=inputs, outputs=output)
-    #model = multi_gpu_model(model, gpus=gpus)
+    # model = multi_gpu_model(model, gpus=gpus)
     model.summary()
     model.compile(loss='binary_crossentropy', metrics=['acc'], optimizer='adam')
     return model
+
 
 def conv1d_BN(max_len, embed_size):
     '''
@@ -90,7 +92,7 @@ def conv1d_BN(max_len, embed_size):
     '''
     filter_sizes = [2, 3, 4, 5, 6]
     num_filters = 128
-    inputs = Input(shape=(max_len,embed_size), dtype='float32')
+    inputs = Input(shape=(max_len, embed_size), dtype='float32')
     conv_0 = Conv1D(num_filters, kernel_size=(filter_sizes[0]))(inputs)
     act_0 = Activation('relu')(conv_0)
     bn_0 = BatchNormalization(momentum=0.7)(act_0)
@@ -122,7 +124,7 @@ def conv1d_BN(max_len, embed_size):
     output = Dense(units=1, activation='sigmoid')(flatten)
 
     model = Model(inputs=inputs, outputs=output)
-    #model = multi_gpu_model(model, gpus=gpus)
+    # model = multi_gpu_model(model, gpus=gpus)
     model.summary()
     model.compile(loss='binary_crossentropy', metrics=['acc'], optimizer='adam')
     return model
@@ -135,6 +137,7 @@ args = parser.parse_args()
 seed = 7
 max_len = 200
 embed_size = 1024
+batch_size = 32
 
 x_data, y_data, ids = load_elmo(args.inputTSV, max_len=max_len)
 
@@ -148,13 +151,43 @@ for train, test in kfold.split(x_data, y_data):
     i += 1
     print("current fold is : %s " % i)
     model = conv1d_BN(max_len, embed_size)
-    checkpoints = ModelCheckpoint(filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_f%s_e{epoch:02d}.hdf5' % str(i),
-                                  verbose=1,monitor='val_acc', save_best_only=True)
-    history = model.fit(x_data[train],y_data[train],batch_size=32,verbose=1, epochs=30,
-              validation_data=[x_data[test],y_data[test]],callbacks=[checkpoints])
+    checkpoints = ModelCheckpoint(
+        filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_f%s_e{epoch:02d}.hdf5' % str(i),
+        verbose=1, monitor='val_acc', save_best_only=True)
+    history = model.fit(
+        x_data[train], y_data[train], batch_size=batch_size, verbose=1, epochs=30,
+        validation_data=[x_data[test], y_data[test]], callbacks=[checkpoints])
     # use the last validation accuracy from the 30 epochs
     his_val = history.history['val_acc'][-1]
     cvscores.append(his_val)
     # clear memory
     K.clear_session()
+    break
 print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(cvscores), np.std(cvscores)))
+
+
+def ohemGenerator(data, target, batchSize, pos2negRatio=0.5):
+    positiveId = np.where(target == 1)[0]
+    negativeId = np.where(target == 0)[0]
+    posNum = int(batchSize * pos2negRatio)
+    idx = 0
+    steps = len(data) // batchSize
+    posIdx = 0
+    negIdx = 0
+    finalIds = []
+    while idx < steps:
+        finalIds = []
+        for _ in range(posNum):
+            finalIds.append(positiveId[posIdx])
+            posIdx = (posIdx + 1) % len(positiveId)
+        for _ in range(batchSize - posNum):
+            finalIds.append(negativeId[negIdx])
+            negIdx = (negIdx + 1) % len(negativeId)
+        finalIds = np.array(finalIds)
+        np.random.shuffle(finalIds)
+        yield data[finalIds], target[finalIds]
+        idx += 1
+
+
+model.fit_generator(ohemGenerator(x_data, y_data, 32),
+                    steps_per_epoch=len(x_data) // 32)
