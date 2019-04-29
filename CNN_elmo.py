@@ -2,7 +2,7 @@ import ast
 import numpy as np
 from keras.preprocessing import sequence
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from keras.layers import Input, Flatten, Dense, Activation
 from keras.layers import Concatenate, Dropout, Conv1D, MaxPooling1D, BatchNormalization
 from keras.models import Model
@@ -36,7 +36,6 @@ def load_elmo(path, max_len=200):
             label.append(gzip_label)
             ids.append(gzip_id)
             i += 1
-            print(i)
     Y = l_encoder.fit_transform(label)
 
     return np.array(X), np.array(Y), np.array(ids)
@@ -130,6 +129,28 @@ def conv1d_BN(max_len, embed_size):
     return model
 
 
+def ohemGenerator(data, target, batchSize, pos2negRatio=0.3):
+    positiveId = np.where(target == 1)[0]
+    negativeId = np.where(target == 0)[0]
+    posNum = int(batchSize * pos2negRatio)
+    idx = 0
+    steps = len(data) // batchSize
+    posIdx = 0
+    negIdx = 0
+    finalIds = []
+    while True:
+        finalIds = []
+        for _ in range(posNum):
+            finalIds.append(positiveId[posIdx])
+            posIdx = (posIdx + 1) % len(positiveId)
+        for _ in range(batchSize - posNum):
+            finalIds.append(negativeId[negIdx])
+            negIdx = (negIdx + 1) % len(negativeId)
+        finalIds = np.array(finalIds)
+        np.random.shuffle(finalIds)
+        yield data[finalIds], target[finalIds]
+
+
 parser = ArgumentParser()
 parser.add_argument("inputTSV", help="Elmo format input file")
 args = parser.parse_args()
@@ -140,9 +161,9 @@ embed_size = 1024
 batch_size = 32
 
 x_data, y_data, ids = load_elmo(args.inputTSV, max_len=max_len)
-
+trainData, valData, trainTarget, valTarget = train_test_split(x_data, y_data, random_state=seed)
 # sk-learn provides 10-fold CV wrapper.
-kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=seed)
+kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
 # list of validation accuracy from each fold.
 cvscores = []
 # counter to tell which fold.
@@ -154,40 +175,19 @@ for train, test in kfold.split(x_data, y_data):
     checkpoints = ModelCheckpoint(
         filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_f%s_e{epoch:02d}.hdf5' % str(i),
         verbose=1, monitor='val_acc', save_best_only=True)
-    history = model.fit(
-        x_data[train], y_data[train], batch_size=batch_size, verbose=1, epochs=30,
-        validation_data=[x_data[test], y_data[test]], callbacks=[checkpoints])
+#    history = model.fit(
+#        x_data[train], y_data[train], batch_size=batch_size, verbose=1, epochs=30,
+#        validation_data=[x_data[test], y_data[test]], callbacks=[checkpoints])
+    history = model.fit_generator(ohemGenerator(x_data[train], y_data[train], 32),
+                    steps_per_epoch=len(x_data[train]) // 32, epochs=30,
+                    validation_data=ohemGenerator(x_data[test], y_data[test], 32),
+                    validation_steps=len(x_data[test]) // 32, callbacks=[checkpoints])
     # use the last validation accuracy from the 30 epochs
     his_val = history.history['val_acc'][-1]
     cvscores.append(his_val)
     # clear memory
     K.clear_session()
-    break
 print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(cvscores), np.std(cvscores)))
 
 
-def ohemGenerator(data, target, batchSize, pos2negRatio=0.5):
-    positiveId = np.where(target == 1)[0]
-    negativeId = np.where(target == 0)[0]
-    posNum = int(batchSize * pos2negRatio)
-    idx = 0
-    steps = len(data) // batchSize
-    posIdx = 0
-    negIdx = 0
-    finalIds = []
-    while idx < steps:
-        finalIds = []
-        for _ in range(posNum):
-            finalIds.append(positiveId[posIdx])
-            posIdx = (posIdx + 1) % len(positiveId)
-        for _ in range(batchSize - posNum):
-            finalIds.append(negativeId[negIdx])
-            negIdx = (negIdx + 1) % len(negativeId)
-        finalIds = np.array(finalIds)
-        np.random.shuffle(finalIds)
-        yield data[finalIds], target[finalIds]
-        idx += 1
 
-
-model.fit_generator(ohemGenerator(x_data, y_data, 32),
-                    steps_per_epoch=len(x_data) // 32)
