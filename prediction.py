@@ -27,7 +27,6 @@ def load_data(data_path, max_len=200):
             l.append(gzip_label)
             ids.append(gzip_id)
             i += 1
-            print(i)
     label = l_encoder.fit_transform(l)
     return np.array(data), np.array(label), np.array(ids)
 
@@ -42,6 +41,8 @@ if __name__ == "__main__":
     data, target, docId = load_data(args.inputTSV, max_len=maxLen)
     model = load_model(args.savedModel)
     pred = model.predict(data)
+    pred[pred > 0.5] = 1
+    pred[pred <= 0.5] = 0
     print("Accuracy: {}".format(accuracy_score(target, pred)))
     print("F1 score: {}".format(f1_score(target, pred, average="macro")))
     print("Precision: {}".format(precision_score(target, pred, average="macro")))

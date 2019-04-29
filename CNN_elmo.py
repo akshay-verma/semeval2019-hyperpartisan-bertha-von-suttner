@@ -151,7 +151,7 @@ def conv1d_BN(max_len, embed_size):
     model = Model(inputs=inputs, outputs=output)
     # model = multi_gpu_model(model, gpus=gpus)
     model.summary()
-    model.compile(loss=binary_crossentropy, metrics=['acc'], optimizer='adam')
+    model.compile(loss='binary_crossentropy', metrics=['acc'], optimizer='adam')
     return model
 
 
@@ -161,9 +161,9 @@ def gen(data, target, batch_size):
         batchData, batchTarget = [], []
         while len(batchData) < batch_size:
             batchData.append(data[idx])
-            batchTarget.append(data[idx])
+            batchTarget.append(target[idx])
             idx = (idx + 1) % len(data)
-
+        yield np.array(batchData), np.array(batchTarget)
 
 def ohemDataGenerator(model, datagen, batch_size):
     while True:
@@ -171,7 +171,7 @@ def ohemDataGenerator(model, datagen, batch_size):
         while len(samples) < batch_size:
             x_data, y_data = next(datagen)
             preds = model.predict(x_data)
-            errors = np.abs(preds - y_data).max(axis=-1) > .99
+            errors = np.abs(preds - y_data).max(axis=-1) > .3
             samples += x_data[errors].tolist()
             targets += y_data[errors].tolist()
 
@@ -231,16 +231,18 @@ checkpoints = ModelCheckpoint(
     verbose=1, monitor='val_acc', save_best_only=True)
 
 # Train the model
-# history = model.fit_generator(
-#     dataGenerator(trainData, trainTarget, batch_size),
-#     steps_per_epoch=len(trainData) // batch_size, epochs=30,
-#     validation_data=dataGenerator(valData, valTarget, batch_size),
-#     validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
-
 history = model.fit_generator(
-    ohemDataGenerator(
-        model, gen(trainData, trainTarget, batch_size), batch_size),
+    dataGenerator(trainData, trainTarget, batch_size),
     steps_per_epoch=len(trainData) // batch_size, epochs=30,
-    validation_data=ohemDataGenerator(
-        model, gen(valData, valTarget, batch_size), batch_size),
+    validation_data=dataGenerator(valData, valTarget, batch_size),
     validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
+
+#x, y = next(gen(trainData, trainTarget, batch_size))
+#model.predict(x)
+#history = model.fit_generator(
+#    ohemDataGenerator(
+#        model, gen(trainData, trainTarget, batch_size), batch_size),
+#    steps_per_epoch=len(trainData) // batch_size, epochs=30,
+#    validation_data=ohemDataGenerator(
+#        model, gen(valData, valTarget, batch_size), batch_size),
+#    validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
