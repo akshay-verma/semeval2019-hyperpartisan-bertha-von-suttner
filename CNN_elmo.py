@@ -165,6 +165,7 @@ def gen(data, target, batch_size):
             idx = (idx + 1) % len(data)
         yield np.array(batchData), np.array(batchTarget)
 
+
 def ohemDataGenerator(model, datagen, batch_size):
     while True:
         samples, targets = [], []
@@ -231,15 +232,21 @@ checkpoints = ModelCheckpoint(
     verbose=1, monitor='val_acc', save_best_only=True)
 
 # Train the model
-history = model.fit_generator(
-    dataGenerator(trainData, trainTarget, batch_size),
-    steps_per_epoch=len(trainData) // batch_size, epochs=30,
-    validation_data=dataGenerator(valData, valTarget, batch_size),
-    validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
+# history = model.fit_generator(
+#     dataGenerator(trainData, trainTarget, batch_size),
+#     steps_per_epoch=len(trainData) // batch_size, epochs=30,
+#     validation_data=dataGenerator(valData, valTarget, batch_size),
+#     validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
 
-#x, y = next(gen(trainData, trainTarget, batch_size))
-#model.predict(x)
-#history = model.fit_generator(
+history = model.fit(trainData, trainTarget, batch_size=batch_size,
+                    steps_per_epoch=len(trainData) // batch_size,
+                    validation_steps=len(valData) // batch_size,
+                    epochs=30, validation_data=(valData, valTarget),
+                    callbacks=[checkpoints])
+
+# x, y = next(gen(trainData, trainTarget, batch_size))
+# model.predict(x)
+# history = model.fit_generator(
 #    ohemDataGenerator(
 #        model, gen(trainData, trainTarget, batch_size), batch_size),
 #    steps_per_epoch=len(trainData) // batch_size, epochs=30,
