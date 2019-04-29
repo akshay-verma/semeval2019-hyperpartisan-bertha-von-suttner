@@ -1,5 +1,7 @@
 import ast
 import numpy as np
+import tensorflow as tf
+
 from keras.preprocessing import sequence
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -39,6 +41,30 @@ def load_elmo(path, max_len=200):
     Y = l_encoder.fit_transform(label)
 
     return np.array(X), np.array(Y), np.array(ids)
+
+
+def binary_crossentropy(target, output, from_logits=False):
+    """Binary crossentropy between an output tensor and a target tensor.
+    # Arguments
+        target: A tensor with the same shape as `output`.
+        output: A tensor.
+        from_logits: Whether `output` is expected to be a logits tensor.
+            By default, we consider that `output`
+            encodes a probability distribution.
+    # Returns
+        A tensor.
+    """
+    # Note: tf.nn.sigmoid_cross_entropy_with_logits
+    # expects logits, Keras expects probabilities.
+    if not from_logits:
+        # transform back to logits
+        _epsilon = tf.convert_to_tensor(1e-7,
+                                        dtype=output.dtype.base_dtype)
+        output = tf.clip_by_value(output, _epsilon, 1 - _epsilon)
+        output = tf.log(output / (1 - output))
+    output = tf.nn.sigmoid_cross_entropy_with_logits(labels=target,
+                                                     logits=output)
+    return K.mean(output, axis=-1)
 
 
 def conv1d(max_len, embed_size):
@@ -125,16 +151,48 @@ def conv1d_BN(max_len, embed_size):
     model = Model(inputs=inputs, outputs=output)
     # model = multi_gpu_model(model, gpus=gpus)
     model.summary()
-    model.compile(loss='binary_crossentropy', metrics=['acc'], optimizer='adam')
+    model.compile(loss=binary_crossentropy, metrics=['acc'], optimizer='adam')
     return model
 
 
-def ohemGenerator(data, target, batchSize, pos2negRatio=0.3):
+def gen(data, target, batch_size):
+    idx = 0
+    while True:
+        batchData, batchTarget = [], []
+        while len(batchData) < batch_size:
+            batchData.append(data[idx])
+            batchTarget.append(data[idx])
+            idx = (idx + 1) % len(data)
+
+
+def ohemDataGenerator(model, datagen, batch_size):
+    while True:
+        samples, targets = [], []
+        while len(samples) < batch_size:
+            x_data, y_data = next(datagen)
+            preds = model.predict(x_data)
+            errors = np.abs(preds - y_data).max(axis=-1) > .99
+            samples += x_data[errors].tolist()
+            targets += y_data[errors].tolist()
+
+        regular_samples = batch_size * 2 - len(samples)
+        x_data, y_data = next(datagen)
+        samples += x_data[:regular_samples].tolist()
+        targets += y_data[:regular_samples].tolist()
+
+        samples, targets = map(np.array, (samples, targets))
+
+        idx = np.arange(batch_size * 2)
+        np.random.shuffle(idx)
+        batch1, batch2 = np.split(idx, 2)
+        yield samples[batch1], targets[batch1]
+        yield samples[batch2], targets[batch2]
+
+
+def dataGenerator(data, target, batchSize, pos2negRatio=0.3):
     positiveId = np.where(target == 1)[0]
     negativeId = np.where(target == 0)[0]
     posNum = int(batchSize * pos2negRatio)
-    idx = 0
-    steps = len(data) // batchSize
     posIdx = 0
     negIdx = 0
     finalIds = []
@@ -160,34 +218,29 @@ max_len = 200
 embed_size = 1024
 batch_size = 32
 
+# Split training and validation data
 x_data, y_data, ids = load_elmo(args.inputTSV, max_len=max_len)
 trainData, valData, trainTarget, valTarget = train_test_split(x_data, y_data, random_state=seed)
-# sk-learn provides 10-fold CV wrapper.
-kfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-# list of validation accuracy from each fold.
-cvscores = []
-# counter to tell which fold.
-i = 0
-for train, test in kfold.split(x_data, y_data):
-    i += 1
-    print("current fold is : %s " % i)
-    model = conv1d_BN(max_len, embed_size)
-    checkpoints = ModelCheckpoint(
-        filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_f%s_e{epoch:02d}.hdf5' % str(i),
-        verbose=1, monitor='val_acc', save_best_only=True)
-#    history = model.fit(
-#        x_data[train], y_data[train], batch_size=batch_size, verbose=1, epochs=30,
-#        validation_data=[x_data[test], y_data[test]], callbacks=[checkpoints])
-    history = model.fit_generator(ohemGenerator(x_data[train], y_data[train], 32),
-                    steps_per_epoch=len(x_data[train]) // 32, epochs=30,
-                    validation_data=ohemGenerator(x_data[test], y_data[test], 32),
-                    validation_steps=len(x_data[test]) // 32, callbacks=[checkpoints])
-    # use the last validation accuracy from the 30 epochs
-    his_val = history.history['val_acc'][-1]
-    cvscores.append(his_val)
-    # clear memory
-    K.clear_session()
-print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(cvscores), np.std(cvscores)))
 
+# Create the model
+model = conv1d_BN(max_len, embed_size)
 
+# Callback
+checkpoints = ModelCheckpoint(
+    filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_e{epoch:02d}.hdf5',
+    verbose=1, monitor='val_acc', save_best_only=True)
 
+# Train the model
+# history = model.fit_generator(
+#     dataGenerator(trainData, trainTarget, batch_size),
+#     steps_per_epoch=len(trainData) // batch_size, epochs=30,
+#     validation_data=dataGenerator(valData, valTarget, batch_size),
+#     validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
+
+history = model.fit_generator(
+    ohemDataGenerator(
+        model, gen(trainData, trainTarget, batch_size), batch_size),
+    steps_per_epoch=len(trainData) // batch_size, epochs=30,
+    validation_data=ohemDataGenerator(
+        model, gen(valData, valTarget, batch_size), batch_size),
+    validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
