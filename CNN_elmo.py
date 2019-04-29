@@ -210,6 +210,85 @@ def dataGenerator(data, target, batchSize, pos2negRatio=0.3):
         yield data[finalIds], target[finalIds]
 
 
+def stratifiedRandomTesting(kfold):
+    i = 0
+    scores = []
+    for train, val in kfold.split(x_data, y_data):
+        trainData = x_data[train]
+        trainTarget = y_data[train]
+        valData = x_data[val]
+        valTarget = y_data[val]
+        i += 1
+        model = conv1d_BN(max_len, embed_size)
+        checkpoints = ModelCheckpoint(
+            filepath='./random_models/random_vacc{val_acc:.4f}_e{epoch:02d}_f{}.hdf5'.format(i),
+            verbose=1, monitor='val_acc', save_best_only=True)
+        history = model.fit(trainData, trainTarget, batch_size=batch_size,
+                            steps_per_epoch=len(trainData) // batch_size,
+                            validation_steps=len(valData) // batch_size,
+                            epochs=30, validation_data=(valData, valTarget),
+                            callbacks=[checkpoints], verbose=0)
+        scores.extend(history.history['val_acc'])
+        K.clear_session()
+        del model
+    print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(scores), np.std(scores)))
+
+
+def stratifiedOhemTesting(kfold):
+    i = 0
+    scores = []
+    for train, val in kfold.split(x_data, y_data):
+        trainData = x_data[train]
+        trainTarget = y_data[train]
+        valData = x_data[val]
+        valTarget = y_data[val]
+        i += 1
+        model = conv1d_BN(max_len, embed_size)
+        checkpoints = ModelCheckpoint(
+            filepath='./ohem_models/ohem_vacc{val_acc:.4f}_e{epoch:02d}_f{}.hdf5'.format(i),
+            verbose=1, monitor='val_acc', save_best_only=True)
+        x, y = next(gen(trainData, trainTarget, batch_size))
+        model.predict(x)
+        history = model.fit_generator(
+            ohemDataGenerator(
+                model, gen(trainData, trainTarget, batch_size), batch_size),
+            steps_per_epoch=len(trainData) // batch_size, epochs=30,
+            validation_data=ohemDataGenerator(
+                model, gen(valData, valTarget, batch_size), batch_size),
+            validation_steps=len(valData) // batch_size, callbacks=[checkpoints],
+            verbose=0)
+        scores.extend(history.history['val_acc'])
+        K.clear_session()
+        del model
+    print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(scores), np.std(scores)))
+
+
+def stratifiedSamplingTesting(kfold):
+    i = 0
+    scores = []
+    for train, val in kfold.split(x_data, y_data):
+        trainData = x_data[train]
+        trainTarget = y_data[train]
+        valData = x_data[val]
+        valTarget = y_data[val]
+        i += 1
+        model = conv1d_BN(max_len, embed_size)
+        checkpoints = ModelCheckpoint(
+            filepath='./sample_models/pos2neg_vacc{val_acc:.4f}_e{epoch:02d}_f{}.hdf5'.format(i),
+            verbose=1, monitor='val_acc', save_best_only=True)
+
+        history = model.fit_generator(
+            dataGenerator(trainData, trainTarget, batch_size),
+            steps_per_epoch=len(trainData) // batch_size, epochs=30,
+            validation_data=dataGenerator(valData, valTarget, batch_size),
+            validation_steps=len(valData) // batch_size, callbacks=[checkpoints],
+            verbose=0)
+        scores.extend(history.history['val_acc'])
+        K.clear_session()
+        del model
+    print("Final score: %.4f%% (+/- %.4f%%)" % (np.mean(scores), np.std(scores)))
+
+
 parser = ArgumentParser()
 parser.add_argument("inputTSV", help="Elmo format input file")
 args = parser.parse_args()
@@ -221,35 +300,14 @@ batch_size = 32
 
 # Split training and validation data
 x_data, y_data, ids = load_elmo(args.inputTSV, max_len=max_len)
-trainData, valData, trainTarget, valTarget = train_test_split(x_data, y_data, random_state=seed)
+kfold = StratifiedKFold(n_splits=10, shuffle=True, random_state=seed)
 
-# Create the model
-model = conv1d_BN(max_len, embed_size)
+print("Train original model...")
+stratifiedRandomTesting(kfold)
 
-# Callback
-checkpoints = ModelCheckpoint(
-    filepath='./saved_models/BNCNN_vacc{val_acc:.4f}_e{epoch:02d}.hdf5',
-    verbose=1, monitor='val_acc', save_best_only=True)
+print("Train ohem model...")
+stratifiedOhemTesting(kfold)
 
-# Train the model
-# history = model.fit_generator(
-#     dataGenerator(trainData, trainTarget, batch_size),
-#     steps_per_epoch=len(trainData) // batch_size, epochs=30,
-#     validation_data=dataGenerator(valData, valTarget, batch_size),
-#     validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
+print("Train sampling model...")
+stratifiedSamplingTesting(kfold)
 
-history = model.fit(trainData, trainTarget, batch_size=batch_size,
-                    steps_per_epoch=len(trainData) // batch_size,
-                    validation_steps=len(valData) // batch_size,
-                    epochs=30, validation_data=(valData, valTarget),
-                    callbacks=[checkpoints])
-
-# x, y = next(gen(trainData, trainTarget, batch_size))
-# model.predict(x)
-# history = model.fit_generator(
-#    ohemDataGenerator(
-#        model, gen(trainData, trainTarget, batch_size), batch_size),
-#    steps_per_epoch=len(trainData) // batch_size, epochs=30,
-#    validation_data=ohemDataGenerator(
-#        model, gen(valData, valTarget, batch_size), batch_size),
-#    validation_steps=len(valData) // batch_size, callbacks=[checkpoints])
